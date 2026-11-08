@@ -1,0 +1,24 @@
+# =============================================================================
+# Smena — production reverse proxy (automatic HTTPS via ACME)
+# =============================================================================
+# The domain comes from APP_DOMAIN (compose.prod.yml passes it through).
+# Caddy terminates TLS, redirects HTTP→HTTPS and proxies EVERYTHING to the
+# web container. The nginx inside `web` already owns:
+#   * static SPA + history fallback,
+#   * the same-origin /api/ and /health/ proxies to api:8000,
+#   * security headers / CSP (MAX Bridge origin),
+#   * client_max_body_size for uploads.
+# Keeping one owner of those rules avoids header/route drift between proxies.
+#
+# Persistent certificate state lives in the caddy_data / caddy_config volumes.
+#
+# LOCAL PRODUCTION SIMULATION uses Caddyfile.local instead (tls internal) —
+# production configuration is never edited for local tests.
+# =============================================================================
+
+{$APP_DOMAIN} {
+	# HSTS: Caddy does not send it automatically; nginx stays untouched so
+	# this header belongs at the TLS-terminating edge.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy web:8080
+}

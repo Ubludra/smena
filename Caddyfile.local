@@ -1,0 +1,20 @@
+# =============================================================================
+# Smena — LOCAL PRODUCTION SIMULATION ONLY (not for VK Cloud!)
+# =============================================================================
+# Identical routing to the production Caddyfile, but certificates come from
+# Caddy's own local CA (`tls internal`) so the full stack — TLS termination,
+# redirect, proxy chain, SPA fallback — can be verified without DNS.
+#
+#   APP_DOMAIN=smena.localhost CADDYFILE=./Caddyfile.local \
+#     docker compose -f compose.prod.yml --env-file .env.localprod up -d --build
+#
+# Trust the CA for curl: extract /data/caddy/pki/authorities/local/root.crt
+# from the caddy container (see docs/VK_CLOUD_DEPLOY.md, local section).
+# =============================================================================
+
+{$APP_DOMAIN} {
+	tls internal
+	# No HSTS here on purpose: a local CA plus HSTS teaches browsers to
+	# distrust every real certificate for this name afterwards.
+	reverse_proxy web:8080
+}

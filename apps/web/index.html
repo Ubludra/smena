@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover: safe-area insets (notch/Dynamic Island/home
+         indicator) become available to CSS env() variables. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f6f7fd" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Смена — рабочее место преподавателя</title>
+    <!-- Official MAX Bridge (dev.max.ru/docs/webapps/bridge). Loaded
+         non-module so window.WebApp exists before the app bundle runs;
+         outside MAX the script defines it as a no-op stub — the app must
+         never assume MAX is present (CROSS-PLATFORM INVARIANT). -->
+    <script src="https://st.max.ru/js/max-web-app.js" defer onerror="void 0"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

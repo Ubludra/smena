@@ -1,0 +1,97 @@
+# =============================================================================
+# Smena — local development stack (Docker-first / Podman-compatible)
+# =============================================================================
+# Usage:
+#   make up            (= docker compose up -d --build; see PROJECT_STATE.md
+#                       about the Podman foreground-up limitation)
+#   docker compose ps                (status)
+#   docker compose logs -f api       (logs)
+#   docker compose down -v           (stop and remove volumes)
+#
+# All ${VAR:-default} values are LOCAL-DEV defaults. Override via `.env`.
+# =============================================================================
+
+name: smena
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smena}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smena_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-smena}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smena} -d ${POSTGRES_DB:-smena}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://smena:smena_dev_only@postgres:5432/smena}
+      TEST_DATABASE_URL: ${TEST_DATABASE_URL:-postgresql+asyncpg://smena:smena_dev_only@postgres:5432/smena_test}
+      SECRET_KEY: ${SECRET_KEY:-dev-insecure-secret-key-change-me}
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      # Dev login (browser fallback flow). MUST be false in production —
+      # the settings validator refuses production + dev auth outright.
+      ENABLE_DEV_AUTH: ${ENABLE_DEV_AUTH:-true}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-43200}
+      # MAX production identity: set to the real bot token to enable
+      # /api/v1/auth/max-launch verification. Empty ⇒ endpoint honestly
+      # reports MAX_NOT_CONFIGURED (503).
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      MAX_INIT_DATA_MAX_AGE_SECONDS: ${MAX_INIT_DATA_MAX_AGE_SECONDS:-3600}
+      # Uploaded files live on a dedicated named volume, outside the image.
+      UPLOAD_DIR: ${UPLOAD_DIR:-/data/uploads}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-20971520}
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/data/uploads
+    healthcheck:
+      # Script form: inline `python -c` gets word-split by the Podman compose
+      # emulation (observed on this host) and reports false unhealthy.
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        # Empty ⇒ the SPA calls the API via same-origin relative URLs
+        # (/api/v1/...), which nginx proxies to FastAPI (see nginx.conf).
+        # This is what MAX Mini App / any public HTTPS origin requires:
+        # localhost:8000 inside the MAX webview would be the user's device.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        # Local Compose defaults to the browser demo; use false in production.
+        VITE_ENABLE_BROWSER_DEMO: ${VITE_ENABLE_BROWSER_DEMO:-true}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-5173}:8080"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  uploads_data:

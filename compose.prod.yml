@@ -1,0 +1,147 @@
+# =============================================================================
+# Smena — PRODUCTION stack (single VM: VK Cloud or equivalent)
+# =============================================================================
+# Usage on a fresh VM (full walkthrough: docs/VK_CLOUD_DEPLOY.md):
+#
+#   git clone https://github.com/Ubludra/smena.git && cd smena
+#   cp .env.production.example .env   # then fill in every CHANGE_ME value
+#   docker compose -f compose.prod.yml up -d --build
+#
+# Topology (only Caddy is reachable from the Internet):
+#
+#   Internet ──80/443──> caddy ──> web (nginx statics + /api proxy) ──> api ──> postgres
+#
+# Hard rules enforced here:
+#   * postgres / api / web publish NO host ports (compose network only);
+#   * secrets are REQUIRED (${VAR:?}) — a missing secret fails `up` loudly,
+#     dev fallbacks from compose.yaml deliberately do not exist here;
+#   * ENVIRONMENT=production + ENABLE_DEV_AUTH=false are hard-coded: the API
+#     refuses to start with a dev login in production (settings validator);
+#   * persistent named volumes: postgres_data, uploads_data, caddy_data,
+#     caddy_config — survive rebuilds and `docker compose down`.
+#     NEVER run `docker compose -f compose.prod.yml down -v` in production.
+#
+# NOTE: single api instance only. The entrypoint applies Alembic migrations
+# on start; scaling api replicas would race on migrations (documented).
+# =============================================================================
+
+name: smena-prod
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    # No `ports:` on purpose — PostgreSQL stays inside the compose network.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+      target: runtime # slim image: no pytest/ruff/mypy in production
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      # Same-origin production needs no cross-origin CORS. Leave empty unless
+      # you deliberately add another browser origin.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Fail-closed: the settings validator refuses production + dev login.
+      ENABLE_DEV_AUTH: "false"
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-43200}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:?set MAX_BOT_TOKEN in .env (required for MAX Mini App login)}
+      MAX_INIT_DATA_MAX_AGE_SECONDS: ${MAX_INIT_DATA_MAX_AGE_SECONDS:-3600}
+      UPLOAD_DIR: /data/uploads
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-20971520}
+    # No `ports:` on purpose — Caddy reaches it through the web container.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/data/uploads
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    logging: *default-logging
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        # Empty ⇒ the SPA calls same-origin relative /api/v1/... URLs. This is
+        # a MAX Mini App requirement: absolute http://localhost or http://api
+        # URLs inside the webview are unreachable / mixed content.
+        VITE_API_BASE_URL: ""
+        # Browser demo login must not exist in a production bundle.
+        VITE_ENABLE_BROWSER_DEMO: "false"
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    # Dockerfile HEALTHCHECK hits the static root; shorten the first wait so
+    # caddy's ordered start does not idle for half a minute.
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    logging: *default-logging
+
+  caddy:
+    image: docker.io/library/caddy:2
+    restart: unless-stopped
+    # Production defaults are 80/443. HTTP_PORT/HTTPS_PORT exist ONLY for the
+    # documented local simulation (rootless podman cannot bind privileged
+    # ports); the production .env never sets them.
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env (public DNS A record must point here)}
+    volumes:
+      # CADDYFILE override exists ONLY for the documented local production
+      # simulation (Caddyfile.local with tls internal). Production default:
+      - ${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # ACME account + certificates
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2019/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  uploads_data:
+  caddy_data:
+  caddy_config:
