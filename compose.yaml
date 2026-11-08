@@ -1,0 +1,73 @@
+name: smena
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smena}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smena_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-smena}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smena} -d ${POSTGRES_DB:-smena}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://smena:smena_dev_only@postgres:5432/smena}
+      TEST_DATABASE_URL: ${TEST_DATABASE_URL:-postgresql+asyncpg://smena:smena_dev_only@postgres:5432/smena_test}
+      SECRET_KEY: ${SECRET_KEY:-dev-insecure-secret-key-change-me}
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      ENABLE_DEV_AUTH: ${ENABLE_DEV_AUTH:-true}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-43200}
+
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      MAX_INIT_DATA_MAX_AGE_SECONDS: ${MAX_INIT_DATA_MAX_AGE_SECONDS:-3600}
+      UPLOAD_DIR: ${UPLOAD_DIR:-/data/uploads}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-20971520}
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/data/uploads
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+
+        VITE_ENABLE_BROWSER_DEMO: ${VITE_ENABLE_BROWSER_DEMO:-true}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-5173}:8080"
+    depends_on:
+      - api
+volumes:
+  postgres_data:
+  uploads_data:

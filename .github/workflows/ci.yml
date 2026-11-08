@@ -1,0 +1,88 @@
+                                                                               
+                                                                      
+                                                                            
+ 
+                                                                     
+                            
+                                                                               
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smena
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smena_test
+      SECRET_KEY: ci-only-secret-key-not-used-in-any-real-deploy-0123456789
+                                                                     
+                                                                       
+      UPLOAD_DIR: ${{ github.workspace }}/.ci-uploads
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install ".[dev]"
+      - run: ruff check .
+      - run: mypy src
+                                                              
+      - run: python -m pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  production-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API production image (slim runtime target)
+        run: docker build --target runtime -t smena-api:ci ./apps/api
+      - name: Build Web production image
+        run: docker build -t smena-web:ci ./apps/web
+      - name: Validate production compose file
+        run: docker compose -f compose.prod.yml config >/dev/null
+        env:
+                                                                             
+                                                                           
+          APP_DOMAIN: ci.invalid
+          POSTGRES_DB: smena
+          POSTGRES_USER: smena
+          POSTGRES_PASSWORD: ci-placeholder
+          DATABASE_URL: postgresql+asyncpg://smena:ci-placeholder@postgres:5432/smena
+          SECRET_KEY: ci-placeholder-secret-key-0123456789-abcd
+          MAX_BOT_TOKEN: ci-placeholder-bot-token
